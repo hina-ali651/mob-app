@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Using localhost. For physical Android devices via USB, you MUST run:
 // adb reverse tcp:8000 tcp:8000
-const BASE_URL = 'http://localhost:8000';
+export const BASE_URL = 'https://helene-unobscure-chance.ngrok-free.dev';
 
 export interface ApiJob {
   id: number;
@@ -121,6 +121,42 @@ export const ApiClient = {
       console.warn('[API Client] setupProfile failed. Using local fallback.');
     }
     return null;
+  },
+
+  /**
+   * Auth: Fetch User Profile details
+   */
+  async getProfile(): Promise<any> {
+    try {
+      const response = await fetch(`${BASE_URL}/api/auth/me`, {
+        method: 'GET',
+        headers: await this.getAuthHeaders(),
+      });
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (e) {
+      console.warn('[API Client] getProfile failed.');
+    }
+    return null;
+  },
+
+  /**
+   * Auth: Logout and delete token
+   */
+  async logout(): Promise<boolean> {
+    try {
+      const response = await fetch(`${BASE_URL}/api/auth/logout`, {
+        method: 'POST',
+        headers: await this.getAuthHeaders(),
+      });
+      await AsyncStorage.removeItem('@jwt_token');
+      return response.ok;
+    } catch (e) {
+      console.warn('[API Client] logout failed on backend, clearing token locally.');
+      await AsyncStorage.removeItem('@jwt_token');
+      return true;
+    }
   },
 
   /**

@@ -25,3 +25,14 @@ class Job(Base):
     customer_phone = Column(String, nullable=True)
     customer_email = Column(String, nullable=True)
     customer_name = Column(String, nullable=True)
+    link = Column(String, nullable=True)
+
+class EmployerSafetyRecord(Base):
+    __tablename__ = "employer_safety_records"
+    id = Column(Integer, primary_key=True, index=True)
+    employer_phone = Column(String, unique=True, index=True)
+    employer_name = Column(String, nullable=True)
+    trust_score = Column(Float, default=95.0)
+    reports_count = Column(Integer, default=0)
+    complaints = Column(Text, default="")
+    is_verified = Column(Integer, default=0)

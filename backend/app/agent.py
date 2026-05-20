@@ -19,18 +19,22 @@ async def ask_gemini(prompt: str, fallback_response: str) -> str:
     """
     Calls the Gemini API if configured. If it fails or is missing, returns the fallback.
     """
-    if not model:
+    load_dotenv(override=True)
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
         print("[Gemini Agent] Missing API Key. Using fallback response.")
         return fallback_response
     
     try:
-        # Run synchronous generate_content in a thread to avoid blocking FastAPI
+        genai.configure(api_key=api_key)
+        local_model = genai.GenerativeModel('gemini-2.5-flash')
+        
         print("\n" + "="*50)
         print("[AI AGENT] 🧠 Brain is thinking about the following prompt:")
         print(prompt.strip())
         print("="*50)
 
-        response = await asyncio.to_thread(model.generate_content, prompt)
+        response = await asyncio.to_thread(local_model.generate_content, prompt)
         text_response = response.text.strip().replace('**', '')
         
         print("\n[AI AGENT] ✨ Generated Output:")

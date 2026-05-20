@@ -50,6 +50,7 @@ class JobSchema(BaseModel):
     customer_phone: Optional[str]
     customer_email: Optional[str]
     customer_name: Optional[str]
+    link: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -64,3 +65,8 @@ class EmployerVerifyRequest(BaseModel):
 class WorkVerificationRequest(BaseModel):
     job_id: int
     image_uri: str
+
+class ReportEmployerRequest(BaseModel):
+    employer_phone: str
+    employer_name: str
+    complaint_text: str

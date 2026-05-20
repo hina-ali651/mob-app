@@ -82,3 +82,11 @@ def setup_profile(request: schemas.UserProfileSetup, db: Session = Depends(get_d
     db.commit()
     db.refresh(user)
     return user
+
+@router.post("/logout")
+def logout(current_user: models.User = Depends(get_current_user)):
+    return {"message": "Successfully logged out"}
+
+@router.get("/me", response_model=schemas.UserResponse)
+def get_me(current_user: models.User = Depends(get_current_user)):
+    return current_user

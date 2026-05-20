@@ -166,8 +166,8 @@ export const IdCardScreen: React.FC<IdCardScreenProps> = ({
         <TouchableOpacity
           style={styles.logoutBtn}
           onPress={async () => {
-            // Wipe out states and destroy JWT token
-            await ApiClient.setToken('');
+            // Wipe out states, hit backend logout API, and destroy local token
+            await ApiClient.logout();
             setEmail('');
             setUserName('');
             setUserSkill('painter');

@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useAgent } from '../context/AgentContext';
+import { VoiceAssistantManager } from '../services/VoiceAssistantService';
 import {
   View,
   Text,
@@ -8,6 +10,8 @@ import {
   ScrollView,
   Dimensions,
   Animated,
+  Modal,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import {
   ShieldIcon,
@@ -32,28 +36,19 @@ interface DashboardScreenProps {
   setCurrentScreen: (screen: any) => void;
   userName: string;
   userSkill: 'painter' | 'electrician' | 'plumber' | 'carpenter' | 'mason';
+  setUserSkill: (skill: 'painter' | 'electrician' | 'plumber' | 'carpenter' | 'mason') => void;
   userCity: string;
+  setUserCity: (city: string) => void;
   activeTab: 'scout' | 'guardian' | 'economic';
   setActiveTab: (tab: 'scout' | 'guardian' | 'economic') => void;
   isListening: boolean;
   setIsListening: (val: boolean) => void;
-  voiceText: string;
-  setVoiceText: (txt: string) => void;
-  negotiatingJobId: number | null;
-  startNegotiation: (jobId: number, baseRate: number) => void;
-  negotiationStep: number;
-  negotiatedRate: number;
   walletBalance: number;
   setWalletBalance: (val: number | ((prev: number) => number)) => void;
-  escrowActive: boolean;
-  setEscrowActive: (val: boolean) => void;
-  verificationStatus: 'idle' | 'scanning' | 'safe' | 'scam';
-  runEmployerCheck: (phone: string) => void;
   currentJobs: any[];
   setSelectedJob: (job: any) => void;
   t: any;
   glowAnim: Animated.Value;
-  handleVoiceTap: () => void;
 }
 
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({
@@ -61,31 +56,252 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   setCurrentScreen,
   userName,
   userSkill,
+  setUserSkill,
   userCity,
+  setUserCity,
   activeTab,
   setActiveTab,
   isListening,
   setIsListening,
-  voiceText,
-  setVoiceText,
-  negotiatingJobId,
-  startNegotiation,
-  negotiationStep,
-  negotiatedRate,
   walletBalance,
   setWalletBalance,
-  escrowActive,
-  setEscrowActive,
-  verificationStatus,
-  runEmployerCheck,
   currentJobs,
   setSelectedJob,
   t,
   glowAnim,
-  handleVoiceTap,
 }) => {
   const verifiedSkillLabel = t.skillsMap[userSkill];
   const [searchPhone, setSearchPhone] = useState('');
+  const [voiceModalVisible, setVoiceModalVisible] = useState(false);
+  const [customVoicePrompt, setCustomVoicePrompt] = useState('');
+  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  const [voiceInputTranscript, setVoiceInputTranscript] = useState('');
+
+  // ── Reporting State ──────────────────────────────────────────────────
+  const [reportPhone, setReportPhone] = useState('');
+  const [reportName, setReportName] = useState('');
+  const [reportComplaint, setReportComplaint] = useState('');
+  const [isReporting, setIsReporting] = useState(false);
+  const [reportStatusMessage, setReportStatusMessage] = useState('');
+
+  // ── Agent Context ──────────────────────────────────────────────────────
+  const {
+    negotiationPhase,
+    negotiatingJobId,
+    negotiationResult,
+    startNegotiation,
+    clearNegotiation,
+    verificationPhase,
+    verificationResult,
+    runEmployerVerification,
+    submitEmployerReport,
+    clearVerification,
+    marketPulse,
+    marketPulseLoading,
+    fetchMarketPulse,
+    voiceLoading,
+    voiceResponse,
+    clearVoiceResponse,
+    sendVoiceMessage,
+    weatherLoading,
+    weatherData,
+    fetchWeather,
+  } = useAgent();
+
+  // Map context phase → legacy status expected by guardian UI
+  const verificationStatus = verificationPhase;
+
+  // Map context phase → negotiation step number for existing job-card UI
+  const negotiationStep =
+    negotiationPhase === 'vetting' ? 1
+    : negotiationPhase === 'analysing' ? 2
+    : negotiationPhase === 'complete' ? 3
+    : 0;
+  const negotiatedRate = negotiationResult?.negotiated_rate ?? 0;
+
+  // Fetch market pulse when economic tab opens
+  useEffect(() => {
+    if (activeTab === 'economic' && !marketPulse && !marketPulseLoading) {
+      fetchMarketPulse(userSkill, userCity);
+    }
+  }, [activeTab, userSkill, userCity]);
+
+  // Fetch weather on mount and when city or skill updates to power the dynamic banner
+  useEffect(() => {
+    fetchWeather(userCity, userSkill);
+  }, [userCity, userSkill, fetchWeather]);
+
+  // Match skill/search command in voice query
+  const matchSkillCommand = (text: string) => {
+    const normalized = text.toLowerCase();
+    
+    // English search keywords
+    const skillsEn = {
+      painter: ['paint', 'color', 'rang', 'decorator'],
+      electrician: ['electric', 'wire', 'bijli', 'power', 'breaker', 'panel'],
+      plumber: ['plumb', 'pipe', 'water', 'gutter', 'leak', 'fitting'],
+      carpenter: ['carpenter', 'wood', 'door', 'furniture', 'lakri', 'timber'],
+      mason: ['mason', 'brick', 'wall', 'build', 'mistri', 'cement', 'concrete']
+    };
+
+    // Urdu search keywords
+    const skillsUr = {
+      painter: ['رنگ', 'پینٹ', 'رنگ سازی', 'سفیدی'],
+      electrician: ['بجلی', 'تار', 'بورڈ', 'بریکر', 'الیکٹریشن'],
+      plumber: ['نل', 'پائپ', 'پلمبر', 'پانی', 'لیک'],
+      carpenter: ['لکڑی', 'دروازہ', 'فرنیچر', 'بڑھئی'],
+      mason: ['مستری', 'تعمیر', 'اینٹ', 'سیمنٹ']
+    };
+
+    for (const [skill, keywords] of Object.entries(skillsEn)) {
+      if (keywords.some(keyword => normalized.includes(keyword))) {
+        return skill as any;
+      }
+    }
+    for (const [skill, keywords] of Object.entries(skillsUr)) {
+      if (keywords.some(keyword => normalized.includes(keyword))) {
+        return skill as any;
+      }
+    }
+    return null;
+  };
+
+  // Speak out the reply when it arrives from backend
+  useEffect(() => {
+    if (voiceResponse?.reply) {
+      VoiceAssistantManager.speak(voiceResponse.reply, language);
+    }
+  }, [voiceResponse, language]);
+
+  // Set up native speech recognizer events
+  useEffect(() => {
+    if (!VoiceAssistantManager.isSupported()) return;
+
+    VoiceAssistantManager.registerListeners({
+      onSpeechStart: () => {
+        setIsListening(true);
+      },
+      onSpeechEnd: () => {
+        setIsListening(false);
+      },
+      onSpeechResults: (result) => {
+        setIsListening(false);
+        const transcript = result.transcript;
+        if (!transcript) return;
+
+        setVoiceInputTranscript(transcript);
+        
+        // Let user see the text for 1.2 seconds before doing action
+        setTimeout(async () => {
+          // Check for "find [skill]" command
+          const matchedSkill = matchSkillCommand(transcript);
+          if (matchedSkill) {
+            setUserSkill(matchedSkill);
+            setVoiceModalVisible(false);
+            
+            const speakText = language === 'ur'
+              ? `${t.skillsMap[matchedSkill]} کے کام تلاش کیے جا رہے ہیں۔`
+              : `Finding ${matchedSkill} jobs for you.`;
+              
+            VoiceAssistantManager.speak(speakText, language);
+          } else {
+            // Standard query to AI Manager
+            await handleSendVoiceQuery(transcript);
+          }
+        }, 1200);
+      },
+      onSpeechError: (err) => {
+        setIsListening(false);
+        console.warn('Speech recognizer error:', err.error);
+        setVoiceInputTranscript(
+          language === 'ur' ? 'معذرت، صوتی شناخت ناکام رہی۔' : `Error: ${err.error}`
+        );
+      }
+    });
+
+    return () => {
+      VoiceAssistantManager.unregisterListeners();
+    };
+  }, [language, userSkill, userCity]);
+
+  // Voice tap handler — opens the Voice AI Center modal
+  const handleVoiceTap = () => {
+    VoiceAssistantManager.stopSpeaking();
+    setVoiceModalVisible(true);
+    setVoiceInputTranscript('');
+    setCustomVoicePrompt('');
+  };
+
+  // Auto-send voice query — closes modal and fires AI call
+  const handleSendVoiceQuery = async (queryText: string) => {
+    const text = queryText.trim();
+    if (!text) return;
+    setVoiceModalVisible(false);
+    setVoiceInputTranscript('');
+    setCustomVoicePrompt('');
+    setIsListening(false);
+    await sendVoiceMessage(text, userSkill, userCity);
+  };
+
+  // STEP 1: User taps mic → records natively using Android Speech Engine
+  const startVoiceRecording = async () => {
+    VoiceAssistantManager.stopSpeaking();
+    const hasPermission = await VoiceAssistantManager.requestMicrophonePermission();
+    if (!hasPermission) {
+      alert(language === 'ur' ? 'مائیکروفون کی اجازت نہیں ملی۔' : 'Microphone permission denied.');
+      return;
+    }
+    setVoiceInputTranscript(language === 'ur' ? '🎙️ سن رہا ہے...' : '🎙️ Listening...');
+    VoiceAssistantManager.startListening(language);
+  };
+
+  // Employer check — uses context
+  const runEmployerCheck = (phone: string) => {
+    clearVerification();
+    runEmployerVerification(phone);
+  };
+
+  const handleReportSubmit = async () => {
+    const phone = reportPhone.trim();
+    const name = reportName.trim() || 'Employer';
+    const complaint = reportComplaint.trim();
+
+    if (!phone || !complaint) {
+      setReportStatusMessage(
+        language === 'ur'
+          ? 'برائے مہربانی فون نمبر اور شکایت درج کریں۔'
+          : 'Please enter both phone number and complaint description.'
+      );
+      return;
+    }
+
+    setIsReporting(true);
+    setReportStatusMessage('');
+
+    try {
+      const res = await submitEmployerReport(phone, name, complaint);
+      if (res) {
+        setReportStatusMessage(
+          language === 'ur'
+            ? `شکایت درج ہو گئی! آجر کا نیا ٹرسٹ سکور: ${res.new_trust_score}%`
+            : `Reported! Employer's updated Trust Score is ${res.new_trust_score}%.`
+        );
+        setReportPhone('');
+        setReportName('');
+        setReportComplaint('');
+      } else {
+        setReportStatusMessage(
+          language === 'ur' ? 'شکایت جمع کرنے میں خرابی پیش آئی۔' : 'Failed to submit report. Please try again.'
+        );
+      }
+    } catch (e) {
+      setReportStatusMessage(
+        language === 'ur' ? 'شکایت جمع کرنے میں خرابی پیش آئی۔' : 'Failed to submit report.'
+      );
+    } finally {
+      setIsReporting(false);
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -127,9 +343,19 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       <View style={styles.weatherTickerCard}>
         <View style={styles.weatherTickerHeader}>
           <StormCloudIcon color="#00D2FF" size={18} />
-          <Text style={styles.weatherTitleText}>{t.weatherTitle}</Text>
+          <Text style={styles.weatherTitleText}>
+            {weatherData 
+              ? `${weatherData.condition_emoji} ${weatherData.city} ${language === 'ur' ? 'موسم اور کام کا مشورہ' : 'Weather & Work Advice'}`
+              : t.weatherTitle}
+          </Text>
         </View>
-        <Text style={styles.weatherDetailText}>{t.weatherDetail}</Text>
+        <Text style={styles.weatherDetailText}>
+          {weatherLoading
+            ? (language === 'ur' ? 'تازہ ترین موسمی معلومات حاصل کی جا رہی ہیں...' : 'Fetching latest weather intelligence...')
+            : weatherData
+            ? weatherData.work_advice
+            : t.weatherDetail}
+        </Text>
       </View>
 
       {/* THREE INTERACTIVE TABS */}
@@ -258,7 +484,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                       {negotiationStep === 2 && (
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                           <SearchIcon color="#00D2FF" size={12} />
-                          <Text style={styles.negotiationStatusText}>تجزیہ ہو رہا...</Text>
+                          <Text style={styles.negotiationStatusText}>
+                            {language === 'ur' ? 'AI تجزیہ کر رہی ہے...' : 'AI analysing...'}
+                          </Text>
                         </View>
                       )}
                       {negotiationStep === 3 && (
@@ -277,14 +505,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                     ]}
                     disabled={negotiatingJobId === job.id && negotiationStep < 3}
                     onPress={() => {
-                      setWalletBalance(
-                        prev => prev + (negotiatingJobId === job.id ? negotiatedRate : job.rate)
-                      );
-                      alert(
-                        language === 'ur'
-                          ? 'مبارک ہو! کام قبول کر لیا گیا ہے۔ فنڈز اسکرو والٹ میں جمع ہو گئے ہیں۔'
-                          : 'Job Accepted! Funds are secured in escrow wallet.'
-                      );
+                      const earned = negotiatingJobId === job.id ? negotiatedRate : job.rate;
+                      setWalletBalance(prev => prev + earned);
+                      setSelectedJob(job);
+                      setCurrentScreen('job_detail');
                     }}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -318,15 +542,25 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
               <TextInput
                 style={styles.safetyInput}
-                placeholder="03001234567"
+                placeholder={language === 'ur' ? 'نمبر یا ٹھیکیدار کا نام لکھیں' : 'Enter phone number or contractor name'}
                 placeholderTextColor="#475569"
-                keyboardType="phone-pad"
                 value={searchPhone}
-                onChangeText={setSearchPhone}
+                onChangeText={(text) => {
+                  setSearchPhone(text);
+                  if (verificationStatus !== 'idle') clearVerification();
+                }}
+                autoCapitalize="none"
+                autoCorrect={false}
               />
 
               {verificationStatus === 'idle' && (
-                <TouchableOpacity style={styles.verifyBtn} onPress={() => runEmployerCheck(searchPhone || '03001234567')}>
+                <TouchableOpacity
+                  style={[styles.verifyBtn, !searchPhone.trim() && { opacity: 0.5 }]}
+                  onPress={() => {
+                    if (searchPhone.trim()) runEmployerCheck(searchPhone.trim());
+                  }}
+                  disabled={!searchPhone.trim()}
+                >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
                     <ShieldIcon color="#00D2FF" size={14} />
                     <Text style={styles.verifyBtnText}>{t.verifyBtn}</Text>
@@ -344,26 +578,56 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               )}
 
               {verificationStatus === 'safe' && (
-                <View style={[styles.statusNotification, styles.statusSuccess]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                    <VerifiedBadgeIcon color="#10B981" size={14} />
-                    <Text style={styles.statusNotifTitle}>VERIFIED CONTRACTOR</Text>
+                <View>
+                  <View style={[styles.statusNotification, styles.statusSuccess]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <VerifiedBadgeIcon color="#10B981" size={14} />
+                      <Text style={styles.statusNotifTitle}>
+                        {language === 'ur' ? '✅ تصدیق شدہ ٹھیکیدار' : '✅ VERIFIED CONTRACTOR'}
+                      </Text>
+                    </View>
+                    <Text style={styles.statusNotifSub}>
+                      {language === 'ur'
+                        ? `ٹرسٹ سکور: ${verificationResult?.trust_score ?? 97.8}% • کوئی شکایت نہیں`
+                        : `Trust Score: ${verificationResult?.trust_score ?? 97.8}% • Zero active complaints`}
+                    </Text>
                   </View>
-                  <Text style={styles.statusNotifSub}>
-                    Trust Score: 98% • 14 successfully cleared escrows
-                  </Text>
+                  <TouchableOpacity
+                    onPress={() => { clearVerification(); setSearchPhone(''); }}
+                    style={{ marginTop: 8, alignSelf: 'center' }}
+                  >
+                    <Text style={{ color: '#64748B', fontSize: 12 }}>
+                      {language === 'ur' ? '← دوبارہ تلاش کریں' : '← Search another'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               )}
 
               {verificationStatus === 'scam' && (
-                <View style={[styles.statusNotification, styles.statusDanger]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                    <ShieldIcon color="#EF4444" size={14} />
-                    <Text style={styles.statusNotifTitle}>SCAM WARNING</Text>
+                <View>
+                  <View style={[styles.statusNotification, styles.statusDanger]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <ShieldIcon color="#EF4444" size={14} />
+                      <Text style={styles.statusNotifTitle}>⚠ SCAM WARNING</Text>
+                    </View>
+                    <Text style={[styles.statusNotifSub, { marginBottom: 4 }]}>
+                      {verificationResult?.warnings ??
+                        'Employer has active complaints of unpaid wages! Do not take verbal work.'}
+                    </Text>
+                    <Text style={{ color: '#EF4444', fontSize: 11, fontWeight: 'bold' }}>
+                      {language === 'ur'
+                        ? `رپورٹس: ${verificationResult?.reports_count ?? 3} • ٹرسٹ سکور: ${verificationResult?.trust_score ?? 14.5}%`
+                        : `Reports: ${verificationResult?.reports_count ?? 3} • Trust Score: ${verificationResult?.trust_score ?? 14.5}%`}
+                    </Text>
                   </View>
-                  <Text style={styles.statusNotifSub}>
-                    Employer has 3 active claims of unpaid wages! Do not take verbal work.
-                  </Text>
+                  <TouchableOpacity
+                    onPress={() => { clearVerification(); setSearchPhone(''); }}
+                    style={{ marginTop: 8, alignSelf: 'center' }}
+                  >
+                    <Text style={{ color: '#64748B', fontSize: 12 }}>
+                      {language === 'ur' ? '← دوبارہ تلاش کریں' : '← Search another'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               )}
             </View>
@@ -375,6 +639,84 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                 <MapPinIcon color="#EF4444" size={20} />
                 <Text style={styles.radarAlertText}>{t.scamNotice}</Text>
               </View>
+            </View>
+
+            {/* Report a Bad Employer Form */}
+            <View style={[styles.safetyCard, { marginTop: 16 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <ShieldIcon color="#EF4444" size={16} />
+                <Text style={[styles.safetyCardTitle, { marginBottom: 0, color: '#EF4444' }]}>
+                  {language === 'ur' ? 'غیر محفوظ ٹھیکیدار کی رپورٹ کریں' : 'Report Fraudulent Employer'}
+                </Text>
+              </View>
+              <Text style={styles.safetyCardSub}>
+                {language === 'ur'
+                  ? 'دیگر مزدور بھائیوں کو فراڈ سے بچانے کے لیے کسی بھی ایسے ٹھیکیدار کی رپورٹ درج کریں جس نے مزدوری نہ دی ہو۔'
+                  : 'Help other daily wage workers avoid scams by reporting contractors who delayed or refused wages.'}
+              </Text>
+
+              <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4, marginTop: 10 }}>
+                {language === 'ur' ? 'ٹھیکیدار کا فون نمبر *' : 'Contractor Phone Number *'}
+              </Text>
+              <TextInput
+                style={styles.safetyInput}
+                placeholder="03xxxxxxxxx"
+                placeholderTextColor="#475569"
+                keyboardType="phone-pad"
+                value={reportPhone}
+                onChangeText={setReportPhone}
+              />
+
+              <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4, marginTop: 10 }}>
+                {language === 'ur' ? 'ٹھیکیدار کا نام (اختیاری)' : 'Contractor Name (Optional)'}
+              </Text>
+              <TextInput
+                style={styles.safetyInput}
+                placeholder={language === 'ur' ? 'نام درج کریں' : 'Enter contractor name'}
+                placeholderTextColor="#475569"
+                value={reportName}
+                onChangeText={setReportName}
+              />
+
+              <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 4, marginTop: 10 }}>
+                {language === 'ur' ? 'شکایت کی تفصیل *' : 'Complaint Details *'}
+              </Text>
+              <TextInput
+                style={[styles.safetyInput, { height: 60, textAlignVertical: 'top' }]}
+                placeholder={language === 'ur' ? 'جیسے: پیسے نہیں دیے، بدتمیزی کی' : 'e.g., Did not pay wages, delayed for 2 weeks'}
+                placeholderTextColor="#475569"
+                multiline
+                numberOfLines={3}
+                value={reportComplaint}
+                onChangeText={setReportComplaint}
+              />
+
+              {reportStatusMessage ? (
+                <Text style={{
+                  color: reportStatusMessage.includes('شکایت درج') || reportStatusMessage.includes('Reported!') ? '#10B981' : '#EF4444',
+                  fontSize: 12,
+                  marginVertical: 10,
+                  fontWeight: 'bold',
+                  textAlign: 'center'
+                }}>
+                  {reportStatusMessage}
+                </Text>
+              ) : null}
+
+              <TouchableOpacity
+                style={[styles.verifyBtn, { backgroundColor: '#EF444415', borderColor: '#EF4444', marginTop: 8 }]}
+                onPress={handleReportSubmit}
+                disabled={isReporting}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
+                  <ShieldIcon color="#EF4444" size={14} />
+                  <Text style={[styles.verifyBtnText, { color: '#EF4444' }]}>
+                    {isReporting
+                      ? (language === 'ur' ? 'رپورٹ جمع ہو رہی ہے...' : 'Submitting Report...')
+                      : (language === 'ur' ? 'رپورٹ درج کریں' : 'Submit Scam Report')}
+                  </Text>
+                </View>
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -388,28 +730,91 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                 {language === 'ur' ? 'ہنر مندی اور روزگار ترقی' : 'Skill Development & Growth'}
               </Text>
             </View>
-
-            {/* Micro Upskilling Classes */}
-            <View style={styles.economicClassCard}>
-              <Text style={styles.classTitle}>{t.tutorialsTitle}</Text>
-              <View style={styles.classTutorialRow}>
-                <View style={{ marginRight: 10, width: 32, height: 32, borderRadius: 16, backgroundColor: '#FFB80015', justifyContent: 'center', alignItems: 'center' }}>
-                  <ChartIcon color="#FFB800" size={16} />
+            {/* ── Weather Card ── */}
+            {weatherLoading && (
+              <View style={styles.economicClassCard}>
+                <Text style={styles.classTitle}>
+                  {language === 'ur' ? 'موسم کا ڈیٹا لوڈ ہو رہا ہے...' : 'Loading weather...'}
+                </Text>
+              </View>
+            )}
+            {weatherData && !weatherLoading && (
+              <View style={styles.economicClassCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={{ fontSize: 24 }}>{weatherData.condition_emoji}</Text>
+                    <Text style={styles.classTitle}>{weatherData.city}</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => fetchWeather(userCity, userSkill)}
+                    style={{
+                      backgroundColor: '#FFB80015',
+                      borderWidth: 1,
+                      borderColor: '#FFB800',
+                      borderRadius: 6,
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                    }}
+                  >
+                    <Text style={{ color: '#FFB800', fontSize: 10, fontWeight: 'bold' }}>
+                      {language === 'ur' ? 'موسم تازہ کریں' : 'Refresh Weather'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.classSubTitle}>
-                    {language === 'ur' ? 'ماربل فٹنگ کی بنیادی ٹپس' : 'Marble Installation Guide'}
+                <Text style={styles.classDuration}>
+                  {weatherData.temperature}°C ({language === 'ur' ? 'محسوس درجہ حرارت' : 'feels like'} {weatherData.apparent_temperature}°C)
+                </Text>
+                <Text style={[styles.squadDescText, { marginTop: 6, color: '#F1F5F9' }]}>
+                  {weatherData.work_advice}
+                </Text>
+              </View>
+            )}
+            {marketPulseLoading && (
+              <View style={[styles.economicClassCard, { alignItems: 'center', paddingVertical: 20 }]}>
+                <SearchIcon color="#FFB800" size={20} />
+                <Text style={[styles.classDuration, { marginTop: 8 }]}>
+                  {language === 'ur' ? 'AI مارکیٹ ڈیٹا لوڈ ہو رہا ہے...' : 'Loading AI market data...'}
+                </Text>
+              </View>
+            )}
+
+            {marketPulse && !marketPulseLoading && (
+              <View style={styles.economicClassCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <Text style={styles.classTitle}>
+                    {language === 'ur' ? 'مارکیٹ ڈیمانڈ انڈیکس' : 'Live Market Pulse'}
                   </Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                    <ClockIcon color="#64748B" size={12} />
-                    <Text style={styles.classDuration}>60 Seconds • 4.9 Rating</Text>
+                  <View style={{
+                    backgroundColor: marketPulse.demand_level === 'high' ? '#10B98120' : marketPulse.demand_level === 'medium' ? '#FFB80020' : '#EF444420',
+                    borderWidth: 1,
+                    borderColor: marketPulse.demand_level === 'high' ? '#10B981' : marketPulse.demand_level === 'medium' ? '#FFB800' : '#EF4444',
+                    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3,
+                  }}>
+                    <Text style={{ color: marketPulse.demand_level === 'high' ? '#10B981' : marketPulse.demand_level === 'medium' ? '#FFB800' : '#EF4444', fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase' }}>
+                      {marketPulse.demand_level} demand
+                    </Text>
                   </View>
                 </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <View>
+                    <Text style={styles.classDuration}>Demand Score</Text>
+                    <Text style={[styles.classSubTitle, { color: '#10B981', fontSize: 22 }]}>{marketPulse.demand_score}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.classDuration}>Avg Daily Rate</Text>
+                    <Text style={[styles.classSubTitle, { color: '#FFB800', fontSize: 18 }]}>Rs. {marketPulse.avg_daily_rate}</Text>
+                  </View>
+                </View>
+                <Text style={[styles.squadDescText, { marginBottom: 8 }]}>{marketPulse.insight}</Text>
+                <View style={{ backgroundColor: '#FFB80010', borderWidth: 1, borderColor: '#FFB80030', borderRadius: 10, padding: 10 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <ChartIcon color="#FFB800" size={12} />
+                    <Text style={{ color: '#FFB800', fontSize: 10, fontWeight: 'bold' }}>UPSKILL TIP</Text>
+                  </View>
+                  <Text style={[styles.squadDescText, { marginTop: 4 }]}>{marketPulse.upskill_tip}</Text>
+                </View>
               </View>
-              <TouchableOpacity style={styles.startClassBtn} onPress={() => alert('Launching Lesson Video...')}>
-                <Text style={styles.startClassText}>{t.skillBtn}</Text>
-              </TouchableOpacity>
-            </View>
+            )}
 
             {/* Labor Squad Builder */}
             <View style={styles.economicClassCard}>
@@ -418,8 +823,12 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                 <Text style={[styles.classTitle, { marginBottom: 0 }]}>{t.squadTitle}</Text>
               </View>
               <Text style={styles.squadDescText}>{t.squadDetail}</Text>
-              <TouchableOpacity style={styles.startClassBtn} onPress={() => alert('Searching squads nearby...')}>
-                <Text style={styles.startClassText}>{t.squadBtn}</Text>
+              <TouchableOpacity style={styles.startClassBtn} onPress={() => fetchMarketPulse(userSkill, userCity)}>
+                <Text style={styles.startClassText}>
+                  {marketPulseLoading
+                    ? (language === 'ur' ? 'لوڈ ہو رہا ہے...' : 'Refreshing...')
+                    : (language === 'ur' ? 'مارکیٹ ڈیٹا ریفریش کریں' : 'Refresh Market Data')}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -449,14 +858,284 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
         <Text style={styles.micPromptText}>
           {isListening
-            ? language === 'ur'
-              ? 'سن رہی ہوں...'
-              : 'Listening...'
-            : language === 'ur'
-            ? 'مدد حاصل کرنے کے لیے مائیک دبائیں'
-            : 'Tap to talk to your AI Manager'}
+            ? (language === 'ur' ? 'سن رہی ہوں...' : 'Listening...')
+            : voiceLoading
+            ? (language === 'ur' ? 'AI جواب تیار کر رہی ہے...' : 'AI thinking...')
+            : (language === 'ur' ? 'مدد کے لیے مائیک دبائیں' : 'Tap mic to talk to AI Manager')}
         </Text>
       </View>
+
+      {/* ── Voice AI Center Input Modal ────────────────────────────── */}
+      <Modal
+        visible={voiceModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => { setVoiceModalVisible(false); setIsListening(false); }}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.7)' }}
+          activeOpacity={1}
+          onPress={() => { if (!isListening) { setVoiceModalVisible(false); } }}
+        >
+          <TouchableWithoutFeedback>
+            <View style={{
+              backgroundColor: '#0E1520',
+              borderTopLeftRadius: 28,
+              borderTopRightRadius: 28,
+              borderWidth: 1.5,
+              borderColor: '#10B981',
+              padding: 24,
+              paddingBottom: 40,
+            }}>
+
+              {/* Header */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+                <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: '#10B98120', borderWidth: 2, borderColor: '#10B981', justifyContent: 'center', alignItems: 'center' }}>
+                  <MicroIcon color="#10B981" size={22} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#10B981', fontSize: 16, fontWeight: 'bold' }}>
+                    {language === 'ur' ? 'AI صوتی مدد گار' : 'AI Voice Manager'}
+                  </Text>
+                  <Text style={{ color: '#64748B', fontSize: 11, marginTop: 2 }}>
+                    {isListening
+                      ? (language === 'ur' ? '⏺ سن رہا ہے — خاموش رہیں' : '⏺ Recording — stay still')
+                      : voiceInputTranscript && !isListening
+                      ? (language === 'ur' ? '✅ پیغام AI کو بھیجا جا رہا ہے...' : '✅ Sending to AI...')
+                      : (language === 'ur' ? 'مائیک دبائیں یا سوال لکھیں' : 'Tap mic or type a question')}
+                  </Text>
+                </View>
+              </View>
+
+              {/* BIG Central Mic Button */}
+              <View style={{ alignItems: 'center', marginBottom: 24 }}>
+                <TouchableOpacity
+                  style={{
+                    width: 90, height: 90, borderRadius: 45,
+                    backgroundColor: isListening ? '#10B981' : '#10B98118',
+                    borderWidth: 3,
+                    borderColor: isListening ? '#10B981' : '#10B98160',
+                    justifyContent: 'center', alignItems: 'center',
+                    shadowColor: '#10B981',
+                    shadowOpacity: isListening ? 0.6 : 0.1,
+                    shadowRadius: isListening ? 20 : 6,
+                    elevation: isListening ? 10 : 2,
+                  }}
+                  onPress={startVoiceRecording}
+                  disabled={isListening}
+                  activeOpacity={0.8}
+                >
+                  <MicroIcon color={isListening ? '#090D14' : '#10B981'} size={40} />
+                </TouchableOpacity>
+
+                <Text style={{
+                  color: isListening ? '#10B981' : '#475569',
+                  fontSize: 13,
+                  marginTop: 12,
+                  fontWeight: isListening ? 'bold' : 'normal',
+                  letterSpacing: isListening ? 1 : 0,
+                }}>
+                  {isListening
+                    ? (language === 'ur' ? '🔴 ریکارڈ ہو رہا ہے...' : '🔴 Recording 2.5s...')
+                    : (language === 'ur' ? 'ٹیپ کریں اور بولیں' : 'Tap & Speak')}
+                </Text>
+              </View>
+
+              {/* Transcript preview box */}
+              {voiceInputTranscript !== '' && (
+                <View style={{
+                  backgroundColor: '#10B98110', borderWidth: 1, borderColor: '#10B98140',
+                  borderRadius: 14, padding: 14, marginBottom: 16,
+                }}>
+                  <Text style={{ color: '#10B981', fontSize: 9, fontWeight: 'bold', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>
+                    {language === 'ur' ? 'آپ نے کہا:' : 'YOU SAID:'}
+                  </Text>
+                  <Text style={{ color: '#F1F5F9', fontSize: 14, lineHeight: 22 }}>
+                    {voiceInputTranscript}
+                  </Text>
+                </View>
+              )}
+
+              {/* Divider */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                <View style={{ flex: 1, height: 1, backgroundColor: '#1E2D40' }} />
+                <Text style={{ color: '#475569', fontSize: 11 }}>
+                  {language === 'ur' ? 'یا خود لکھیں' : 'or type below'}
+                </Text>
+                <View style={{ flex: 1, height: 1, backgroundColor: '#1E2D40' }} />
+              </View>
+
+              {/* Manual Text Input */}
+              <TextInput
+                style={{
+                  backgroundColor: '#131926', borderWidth: 1,
+                  borderColor: customVoicePrompt ? '#10B98160' : '#232E42',
+                  borderRadius: 14, padding: 14, color: '#F1F5F9',
+                  fontSize: 14, marginBottom: 12, minHeight: 52,
+                }}
+                placeholder={language === 'ur' ? 'مثلاً: آج مجھے کیا کام ملے گا؟' : 'e.g. What jobs are available for me today?'}
+                placeholderTextColor="#334155"
+                value={customVoicePrompt}
+                onChangeText={setCustomVoicePrompt}
+                multiline
+                editable={!isListening}
+              />
+
+              {/* Quick Chip Suggestions — tap = instant send */}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
+                {[
+                  language === 'ur' ? `آج ${userCity} میں کام کیا ہے؟` : `Jobs for ${userSkill} in ${userCity}?`,
+                  language === 'ur' ? 'محفوظ یومیہ ریٹ کیا ہے؟' : 'Safe daily rate for me?',
+                  language === 'ur' ? 'کوئی سکام الرٹ ہے؟' : 'Any scam alerts today?',
+                  language === 'ur' ? 'مہارت کیسے بڑھائیں؟' : 'How to upskill fast?',
+                ].map((chip, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={{
+                      backgroundColor: '#10B98112', borderWidth: 1,
+                      borderColor: '#10B98135', borderRadius: 20,
+                      paddingHorizontal: 14, paddingVertical: 8, marginRight: 8,
+                    }}
+                    onPress={() => handleSendVoiceQuery(chip)}
+                    disabled={isListening}
+                  >
+                    <Text style={{ color: '#10B981', fontSize: 12 }}>{chip}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              {/* Send Button */}
+              <TouchableOpacity
+                onPress={() => handleSendVoiceQuery(customVoicePrompt)}
+                disabled={!customVoicePrompt.trim() || isListening}
+                style={{
+                  backgroundColor: customVoicePrompt.trim() && !isListening ? '#10B981' : '#10B98130',
+                  borderRadius: 16, paddingVertical: 15, alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#090D14', fontWeight: 'bold', fontSize: 15 }}>
+                  {language === 'ur' ? '🤖 AI سے پوچھیں' : '🤖 Ask AI Manager'}
+                </Text>
+              </TouchableOpacity>
+
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── AI Voice Response Modal ────────────────────────────────── */}
+      <Modal
+        visible={!!voiceResponse}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          VoiceAssistantManager.stopSpeaking();
+          clearVoiceResponse();
+        }}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' }}
+          activeOpacity={1}
+          onPress={() => {
+            VoiceAssistantManager.stopSpeaking();
+            clearVoiceResponse();
+          }}
+        >
+          <TouchableWithoutFeedback>
+            <View style={{
+              backgroundColor: '#131926',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              borderWidth: 1,
+              borderColor: '#232E42',
+              padding: 24,
+              paddingBottom: 36,
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#10B98120', borderWidth: 1.5, borderColor: '#10B981', justifyContent: 'center', alignItems: 'center' }}>
+                  <MicroIcon color="#10B981" size={18} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#10B981', fontSize: 13, fontWeight: 'bold' }}>
+                    {voiceResponse?.agent ?? 'AI Manager'}
+                  </Text>
+                  <Text style={{ color: '#64748B', fontSize: 10 }}>
+                    Gemini 2.5 Flash • Agentic Orchestrator
+                  </Text>
+                </View>
+              </View>
+              <Text style={{ color: '#F1F5F9', fontSize: 15, lineHeight: 24, marginBottom: 20 }}>
+                {voiceResponse?.reply}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  VoiceAssistantManager.stopSpeaking();
+                  clearVoiceResponse();
+                }}
+                style={{ backgroundColor: '#10B981', borderRadius: 14, paddingVertical: 14, alignItems: 'center' }}
+              >
+                <Text style={{ color: '#090D14', fontWeight: 'bold', fontSize: 14 }}>
+                  {language === 'ur' ? 'ٹھیک ہے' : 'Got it'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Negotiation Result Modal ───────────────────────────────── */}
+      <Modal
+        visible={negotiationPhase === 'complete' && !!negotiationResult}
+        transparent
+        animationType="slide"
+        onRequestClose={clearNegotiation}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' }}
+          activeOpacity={1}
+          onPress={clearNegotiation}
+        >
+          <TouchableWithoutFeedback>
+            <View style={{
+              backgroundColor: '#131926',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              borderWidth: 1,
+              borderColor: '#10B981',
+              padding: 24,
+              paddingBottom: 36,
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <VerifiedBadgeIcon color="#10B981" size={20} />
+                <Text style={{ color: '#10B981', fontSize: 16, fontWeight: 'bold' }}>
+                  {language === 'ur' ? 'مذاکرات کامیاب!' : 'Negotiation Successful!'}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 }}>
+                <View>
+                  <Text style={{ color: '#64748B', fontSize: 10, fontWeight: 'bold' }}>BASE RATE</Text>
+                  <Text style={{ color: '#94A3B8', fontSize: 18, fontWeight: 'bold', textDecorationLine: 'line-through' }}>Rs. {negotiationResult?.base_rate}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={{ color: '#64748B', fontSize: 10, fontWeight: 'bold' }}>AI RATE</Text>
+                  <Text style={{ color: '#10B981', fontSize: 24, fontWeight: '900' }}>Rs. {negotiationResult?.negotiated_rate}</Text>
+                </View>
+              </View>
+              <Text style={{ color: '#CBD5E1', fontSize: 13, lineHeight: 20, marginBottom: 20 }}>
+                {negotiationResult?.message}
+              </Text>
+              <TouchableOpacity
+                onPress={clearNegotiation}
+                style={{ backgroundColor: '#10B981', borderRadius: 14, paddingVertical: 14, alignItems: 'center' }}
+              >
+                <Text style={{ color: '#090D14', fontWeight: 'bold', fontSize: 14 }}>
+                  {language === 'ur' ? 'ریٹ قبول کریں' : 'Accept Rate'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };

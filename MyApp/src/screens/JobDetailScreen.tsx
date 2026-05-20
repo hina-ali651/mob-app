@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions, Modal, TouchableWithoutFeedback, Linking } from 'react-native';
 import {
   ArrowLeftIcon,
   ShieldIcon,
@@ -10,8 +10,10 @@ import {
   BoxIcon,
   PeopleIcon,
   PhoneIcon,
+  SearchIcon,
 } from '../components/Icons';
 import { ApiClient } from '../components/Api';
+import { useAgent } from '../context/AgentContext';
 
 const { width } = Dimensions.get('window');
 
@@ -43,6 +45,20 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
   const [isAccepted, setIsAccepted] = useState(false);
   const [isCheckedIn, setIsCheckedIn] = useState(false);
   const [jobPhotoUploaded, setJobPhotoUploaded] = useState(false);
+  const [statusModal, setStatusModal] = useState<{visible: boolean; title: string; message: string; color: string}>(
+    { visible: false, title: '', message: '', color: '#10B981' }
+  );
+
+  const showStatus = (title: string, message: string, color = '#10B981') =>
+    setStatusModal({ visible: true, title, message, color });
+  const hideStatus = () => setStatusModal(s => ({ ...s, visible: false }));
+
+  const {
+    submitWorkCompletion,
+    escrowLoading,
+    escrowResult,
+    clearEscrowResult
+  } = useAgent();
 
   return (
     <View style={styles.authWrapper}>
@@ -154,6 +170,31 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
             </View>
           </>
         )}
+        {/* Job Link Section */}
+        <Text style={styles.detailSecTitle}>
+          {language === 'ur' ? 'ملازمت کا لنک / ماخذ' : 'Job Listing Reference'}
+        </Text>
+        <View style={[styles.descBlock, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }]}>
+          <View style={{ flex: 1, marginRight: 12 }}>
+            <Text style={{ color: '#F8FAFC', fontSize: 14, fontWeight: '700' }}>
+              {selectedJob.badge || 'Verified Job Posting'}
+            </Text>
+            <Text style={{ color: '#94A3B8', fontSize: 12, marginTop: 4 }} numberOfLines={1} ellipsizeMode="tail">
+              {selectedJob.link || `https://www.google.com/search?q=${encodeURIComponent(selectedJob.title)}`}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={{ backgroundColor: '#00D2FF', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 }}
+            onPress={() => {
+              const url = selectedJob.link || `https://www.google.com/search?q=${encodeURIComponent(selectedJob.title + ' ' + selectedJob.employer)}`;
+              Linking.openURL(url).catch(err => console.error("Couldn't load page", err));
+            }}
+          >
+            <Text style={{ color: '#111827', fontWeight: 'bold', fontSize: 12 }}>
+              {language === 'ur' ? 'لنک کھولیں' : 'Open Link'}
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         {/* Job description section */}
         <Text style={styles.detailSecTitle}>{language === 'ur' ? 'کام کی تفصیلات' : 'Task Description'}</Text>
@@ -191,7 +232,11 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
                 style={styles.stepActionButton}
                 onPress={() => {
                   setIsAccepted(true);
-                  alert(language === 'ur' ? 'کام کامیابی سے قبول کر لیا گیا ہے!' : 'Assignment successfully accepted!');
+                  showStatus(
+                    language === 'ur' ? '✅ قبول کر لیا' : '✅ Accepted',
+                    language === 'ur' ? 'کام کامیابی سے قبول ہو گیا۔ اجرت اسکرو والیٹ میں محفوظ ہے۔' : 'Assignment accepted! Wages are now locked securely in escrow.',
+                    '#10B981'
+                  );
                 }}
               >
                 <Text style={styles.stepActionBtnText}>Accept</Text>
@@ -219,10 +264,10 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
                 style={styles.stepActionButton}
                 onPress={() => {
                   setIsCheckedIn(true);
-                  alert(
-                    language === 'ur'
-                      ? 'چیک ان کامیاب! کام شروع کرنے کا وقت درج ہو گیا ہے۔'
-                      : 'GPS location verified! Checked-in successfully.'
+                  showStatus(
+                    language === 'ur' ? '📍 چیک ان کامیاب' : '📍 Checked In',
+                    language === 'ur' ? 'GPS مقام تصدیق ہو گئی۔ کام کا آغاز وقت درج ہو گیا ہے۔' : 'GPS location verified! Start time recorded. You may now begin work.',
+                    '#00D2FF'
                   );
                 }}
               >
@@ -248,21 +293,23 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
             </View>
             {isCheckedIn && !jobPhotoUploaded && (
               <TouchableOpacity
-                style={[styles.stepActionButton, { backgroundColor: '#00D2FF20', borderColor: '#00D2FF' }]}
+                style={[
+                  styles.stepActionButton,
+                  { backgroundColor: '#00D2FF20', borderColor: '#00D2FF' },
+                  escrowLoading && { opacity: 0.6 }
+                ]}
+                disabled={escrowLoading}
                 onPress={async () => {
                   const finalRate = negotiatingJobId === selectedJob.id ? negotiatedRate : selectedJob.rate;
-                  const result = await ApiClient.verifyWorkCompletion(selectedJob.id, selectedJob.title, finalRate, language);
-                  
-                  if (result.status === 'APPROVED') {
+                  await submitWorkCompletion(selectedJob.id, selectedJob.title, finalRate, (amount) => {
+                    setWalletBalance(prev => prev + amount);
                     setJobPhotoUploaded(true);
-                    setWalletBalance(prev => prev + result.payout_released);
-                    alert(result.message);
-                  } else {
-                    alert(language === 'ur' ? 'تصدیق ناکام! براہ کرم واضح تصویر کھینچیں۔' : 'Verification failed! Please snap a clearer photo.');
-                  }
+                  });
                 }}
               >
-                <Text style={[styles.stepActionBtnText, { color: '#00D2FF' }]}>Snap Work</Text>
+                <Text style={[styles.stepActionBtnText, { color: '#00D2FF' }]}>
+                  {escrowLoading ? (language === 'ur' ? 'تجزیہ...' : 'Analyzing...') : 'Snap Work'}
+                </Text>
               </TouchableOpacity>
             )}
           </View>
@@ -272,13 +319,16 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
         <View style={styles.detailActionRow}>
           <TouchableOpacity
             style={styles.detailCallBtn}
-            onPress={() =>
-              alert(
+            onPress={() => {
+              const phone = selectedJob.customer_phone || '03001234567';
+              showStatus(
+                language === 'ur' ? '📞 کال شروع ہو رہی ہے' : '📞 Calling Employer',
                 language === 'ur'
-                  ? 'ٹھیکیدار کا نمبر: 03001234567 ڈائل کیا جا رہا ہے...'
-                  : 'Calling employer: 03001234567...'
-              )
-            }
+                  ? `ٹھیکیدار ${selectedJob.customer_name || 'صاحب'} سے ${phone} پر رابطہ ہو رہا ہے۔`
+                  : `Dialling ${selectedJob.customer_name || 'employer'} at ${phone}...`,
+                '#10B981'
+              );
+            }}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
               <PhoneIcon color="#FFFFFF" size={14} />
@@ -295,11 +345,6 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
             ]}
             disabled={!isAccepted || !isCheckedIn || !jobPhotoUploaded}
             onPress={() => {
-              alert(
-                language === 'ur'
-                  ? 'مبارک ہو! پروجیکٹ مکمل ہو گیا ہے۔'
-                  : 'Congratulations! Assignment successfully finalized.'
-              );
               setCurrentScreen('dashboard');
               setSelectedJob(null);
             }}
@@ -313,6 +358,97 @@ export const JobDetailScreen: React.FC<JobDetailScreenProps> = ({
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* ── Guardian AI Work Verification Success Modal ── */}
+      <Modal
+        visible={!!escrowResult}
+        transparent
+        animationType="slide"
+        onRequestClose={clearEscrowResult}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' }}
+          activeOpacity={1}
+          onPress={clearEscrowResult}
+        >
+          <TouchableWithoutFeedback>
+            <View style={{
+              backgroundColor: '#131926',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              borderWidth: 1,
+              borderColor: '#10B981',
+              padding: 24,
+              paddingBottom: 36,
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#10B98120', borderWidth: 1.5, borderColor: '#10B981', justifyContent: 'center', alignItems: 'center' }}>
+                  <VerifiedBadgeIcon color="#10B981" size={18} />
+                </View>
+                <View>
+                  <Text style={{ color: '#10B981', fontSize: 13, fontWeight: 'bold' }}>Guardian AI Escrow</Text>
+                  <Text style={{ color: '#64748B', fontSize: 10 }}>Computer Vision Analysis • Success</Text>
+                </View>
+              </View>
+              <Text style={{ color: '#F1F5F9', fontSize: 15, lineHeight: 24, marginBottom: 20 }}>
+                {escrowResult?.message}
+              </Text>
+              <View style={{ backgroundColor: '#10B98115', borderWidth: 1, borderColor: '#10B98130', borderRadius: 12, padding: 12, marginBottom: 20 }}>
+                <Text style={{ color: '#64748B', fontSize: 9, fontWeight: 'bold', textTransform: 'uppercase' }}>Payout Released</Text>
+                <Text style={{ color: '#10B981', fontSize: 24, fontWeight: '900', marginTop: 2 }}>Rs. {escrowResult?.payout_released}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={clearEscrowResult}
+                style={{ backgroundColor: '#10B981', borderRadius: 14, paddingVertical: 14, alignItems: 'center' }}
+              >
+                <Text style={{ color: '#090D14', fontWeight: 'bold', fontSize: 14 }}>
+                  {language === 'ur' ? 'ٹھیک ہے' : 'Got it'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Generic Status Modal (replaces native alert) ── */}
+      <Modal
+        visible={statusModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={hideStatus}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.65)', padding: 28 }}
+          activeOpacity={1}
+          onPress={hideStatus}
+        >
+          <TouchableWithoutFeedback>
+            <View style={{
+              backgroundColor: '#131926',
+              borderRadius: 20,
+              borderWidth: 1.5,
+              borderColor: statusModal.color,
+              padding: 24,
+              width: '100%',
+            }}>
+              <Text style={{ color: statusModal.color, fontSize: 16, fontWeight: 'bold', marginBottom: 10 }}>
+                {statusModal.title}
+              </Text>
+              <Text style={{ color: '#CBD5E1', fontSize: 14, lineHeight: 22, marginBottom: 20 }}>
+                {statusModal.message}
+              </Text>
+              <TouchableOpacity
+                onPress={hideStatus}
+                style={{ backgroundColor: statusModal.color, borderRadius: 12, paddingVertical: 12, alignItems: 'center' }}
+              >
+                <Text style={{ color: '#090D14', fontWeight: 'bold', fontSize: 14 }}>
+                  {language === 'ur' ? 'ٹھیک ہے' : 'OK'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };
