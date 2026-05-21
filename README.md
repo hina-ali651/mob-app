@@ -1,4 +1,4 @@
-# Humsafar AI (ہمسفر) - Daily Wage Workers Agentic Platform
+# Hunar & Hifazat - Daily Wage Workers Agentic Platform
 
 Humsafar AI is a dual-localized (English and Urdu) React Native mobile application and FastAPI backend service designed to empower, secure, and upskill daily-wage workers (painters, electricians, plumbers, carpenters, and masons) in Pakistan. 
 
