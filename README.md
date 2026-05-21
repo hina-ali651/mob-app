@@ -1,6 +1,6 @@
 # Hunar & Hifazat - Daily Wage Workers Agentic Platform
 
-Humsafar AI is a dual-localized (English and Urdu) React Native mobile application and FastAPI backend service designed to empower, secure, and upskill daily-wage workers (painters, electricians, plumbers, carpenters, and masons) in Pakistan. 
+Hunar & Hifazat is a dual-localized (English and Urdu) React Native mobile application and FastAPI backend service designed to empower, secure, and upskill daily-wage workers (painters, electricians, plumbers, carpenters, and masons) in Pakistan. 
 
 By integrating Google Gemini Pro, real-time weather metrics, and digital escrow accounts, the platform delivers structural support to Pakistan's informal labor sector.
 
